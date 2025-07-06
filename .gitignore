@@ -1,2 +1,5 @@
 Miniconda3-latest-Linux-x86_64.sh
-data_prepocess/Ruby_Face_Cream_r0.json
+data_prepocess/sft_data_raw/
+data_prepocess/sft_data_split/
+Qwen2.5-1.5B-Instruct/
+checkpoints/default
