@@ -4,8 +4,8 @@ data:
   micro_batch_size_per_gpu: 1
 
   # 数据集文件（已预处理固定行数）
-  train_files: /home/zss/Social_Behavior_Simulation/data_prepocess/sft_data_split/train_fixed.parquet
-  val_files:   /home/zss/Social_Behavior_Simulation/data_prepocess/sft_data_split/val_fixed.parquet
+  train_files: /home/zss/Social_Behavior_Simulation/data_prepocess/sft_data_split/train_data.parquet
+  val_files:  /home/zss/Social_Behavior_Simulation/data_prepocess/sft_data_split/val_data.parquet
   # 单轮对话字段（本例多轮，不使用）
   prompt_key: null
   response_key: null
@@ -30,7 +30,7 @@ data:
 
 model:
 
-  partial_pretrain: "/home/zss/Social_Behavior_Simulation/Qwen2.5-1.5B-Instruct"
+  partial_pretrain: "/home/zss/Social_Behavior_Simulation/Qwen2.5-3B-Instruct"
 
   # 自动把模型切到各张卡上
   device_map: "auto"
@@ -42,8 +42,8 @@ model:
   enable_gradient_checkpointing: true
 
   custom_cls:
-    path: /home/zss/Social_Behavior_Simulation/data_prepocess/tools/layer_freezing.py
-    name: FrozenQwenModel
+    path: null #/home/zss/Social_Behavior_Simulation/data_prepocess/tools/layer_freezing.py
+    name: null #FrozenQwenModel
 
 
   # LoRA（关闭）
@@ -56,8 +56,9 @@ model:
   strategy: fsdp
 
   fsdp_config:
-    model_dtype: fp16
-    cpu_offload: false
+    model_dtype: fp32
+    cpu_offload: true
+    offload_params: true
     wrap_policy:
       type: size_based
 
@@ -73,7 +74,7 @@ ulysses_sequence_parallel_size: 1
 use_remove_padding: false
 
 trainer:
-  precision: 16
+  precision: 32
   project_name: verl-sft
   experiment_name: Qwen2.5-1.5B-Instruct
   total_epochs: 3
@@ -81,9 +82,10 @@ trainer:
   logger: ['console']
   seed: 42
   default_local_dir: /home/zss/Social_Behavior_Simulation/checkpoints/default
-  save_freq: 1
-  test_freq: 1
+  save_freq: 2000
+  test_freq: 2000
   save_best: true
   save_best_metric: loss
   max_keep_ckpt: 1     
   default_hdfs_dir: null
+  gradient_clip_val: 0.5

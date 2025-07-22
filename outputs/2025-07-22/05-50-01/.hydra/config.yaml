@@ -1,0 +1,88 @@
+data:
+  train_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_train.parquet
+  val_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_val.parquet
+  train_batch_size: 8
+  micro_batch_size_per_gpu: 1
+  max_prompt_length: 8192
+  max_response_length: 8192
+  truncation: right
+  filter_overlong_prompts: true
+  reward_fn_key: null
+  shuffle: true
+ray_init:
+  num_cpus: 16
+  include_dashboard: false
+  ignore_reinit_error: true
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+actor_rollout_ref:
+  model:
+    path: /home/zss/Social_Behavior_Simulation/checkpoints/default/global_step_2079
+  actor:
+    strategy: fsdp
+    optim:
+      lr: 1.0e-05
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: false
+    use_torch_compile: false
+    use_dynamic_bsz: true
+    loss_agg_mode: none
+  rollout:
+    mode: sync
+    name: huggingface
+    'n': 4
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    log_prob_micro_batch_size_per_gpu: 1
+  hybrid_engine: true
+custom_reward_function:
+  path: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/tools/grpo_f1_reward.py
+  name: compute_score
+reward_model:
+  enable: false
+trainer:
+  nnodes: 1
+  n_gpus_per_node: 8
+  project_name: social-behavior-grpo
+  experiment_name: run8gpu
+  total_epochs: 3
+  precision: 32
+  logger:
+  - console
+  - tensorboard
+  seed: 42
+  save_freq: 1000
+  test_freq: 1000
+  save_best: true
+  save_best_metric: reward
+  max_keep_ckpt: 1
+  default_local_dir: /home/zss/Social_Behavior_Simulation/checkpoints/grpo_checkpoints
+  device: cuda
+critic:
+  strategy: fsdp
+  device_map: auto
+  fsdp_config:
+    cpu_offload: true
+    model_dtype: fp16
+    offload_params: true
+    wrap_policy:
+      type: size_based
+model:
+  partial_pretrain: /home/zss/Social_Behavior_Simulation/checkpoints/default/global_step_2079
+  device_map: auto
+  attn_implementation: flash_attention_2
+  enable_gradient_checkpointing: true
+  strategy: fsdp
+  fsdp_config:
+    model_dtype: fp16
+    cpu_offload: true
+    offload_params: true
+    wrap_policy:
+      type: size_based
+ulysses_sequence_parallel_size: 1
+use_remove_padding: false

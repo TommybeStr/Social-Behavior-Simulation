@@ -1,0 +1,135 @@
+custom_reward_function:
+  path: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/tools/grpo_f1_reward.py
+  name: compute_score
+algorithm:
+  _target_: verl.trainer.config.AlgoConfig
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+  kl_penalty: kl
+  kl_ctrl:
+    _target_: verl.trainer.config.KLControlConfig
+    type: fixed
+    kl_coef: 0.001
+    horizon: 10000
+    target_kl: 0.1
+  use_pf_ppo: false
+  pf_ppo:
+    _target_: verl.trainer.config.PFPPOConfig
+    reweight_method: pow
+    weight_pow: 2.0
+actor_rollout_ref:
+  hybrid_engine: true
+  nccl_timeout: 600
+  model:
+    path: /home/zss/Social_Behavior_Simulation/checkpoints/default/global_step_2079
+    custom_chat_template: null
+    external_lib: null
+    override_config:
+      model_config: {}
+      moe_config:
+        freeze_moe_router: false
+    use_fused_kernels: false
+    trust_remote_code: false
+  actor:
+    strategy: fsdp
+    optim:
+      lr: 1.0e-05
+    ppo_mini_batch_size: 8
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: false
+    use_torch_compile: false
+    use_dynamic_bsz: true
+    loss_agg_mode: token_mean
+  rollout:
+    mode: sync
+    name: huggingface
+    'n': 4
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    log_prob_micro_batch_size_per_gpu: 1
+    enable_chunked_prefill: false
+    load_format: dummy_megatron
+    layer_name_map:
+      qkv_layer_name: qkv
+      gate_proj_layer_name: gate_up
+  profiler:
+    _target_: verl.utils.profiler.ProfilerConfig
+    discrete: false
+    all_ranks: false
+    ranks: []
+data:
+  train_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_train.parquet
+  val_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_val.parquet
+  train_batch_size: 8
+  micro_batch_size_per_gpu: 1
+  max_prompt_length: 8192
+  max_response_length: 8192
+  truncation: right
+  filter_overlong_prompts: true
+  reward_fn_key: null
+  shuffle: true
+reward_model:
+  enable: false
+trainer:
+  balance_batch: true
+  total_epochs: 3
+  total_training_steps: null
+  profile_steps: null
+  project_name: social-behavior-grpo
+  experiment_name: run8gpu
+  logger:
+  - console
+  - tensorboard
+  log_val_generations: 0
+  nnodes: 1
+  n_gpus_per_node: 8
+  save_freq: 1000
+  esi_redundant_time: 0
+  resume_mode: auto
+  resume_from_path: null
+  del_local_ckpt_after_load: false
+  val_before_train: true
+  test_freq: 1000
+  critic_warmup: 0
+  default_local_dir: /home/zss/Social_Behavior_Simulation/checkpoints/grpo_checkpoints
+  max_actor_ckpt_to_keep: null
+  max_critic_ckpt_to_keep: null
+  ray_wait_register_center_timeout: 300
+  device: cuda
+  seed: 42
+  save_best: true
+  save_best_metric: reward
+  precision: 32
+critic:
+  strategy: fsdp
+  device_map: auto
+  fsdp_config:
+    cpu_offload: true
+    model_dtype: fp16
+    offload_params: true
+    wrap_policy:
+      type: size_based
+model:
+  partial_pretrain: /home/zss/Social_Behavior_Simulation/checkpoints/default/global_step_2079
+  device_map: auto
+  attn_implementation: flash_attention_2
+  enable_gradient_checkpointing: true
+  strategy: fsdp
+  fsdp_config:
+    model_dtype: fp16
+    cpu_offload: true
+    offload_params: true
+    wrap_policy:
+      type: size_based
+ray_init:
+  num_cpus: 16
+  include_dashboard: false
+  ignore_reinit_error: true
+ulysses_sequence_parallel_size: 1
+use_remove_padding: false
