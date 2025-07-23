@@ -1,4 +1,0 @@
-- model.partial_pretrain=
-- trainer.default_local_dir=/home/zss/Social_Behavior_Simulation/checkpoints/run8gpu
-- trainer.project_name=social-behavior-sft
-- trainer.experiment_name=run8gpu
