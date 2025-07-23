@@ -1,6 +1,6 @@
 
 custom_reward_function:
-  path: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/tools/grpo_f1_reward.py
+  path: /home/zss/Social_Behavior_Simulation/data_preprocess/scripts/tools/grpo_f1_reward.py
   name: compute_score
 
 algorithm:
@@ -81,8 +81,8 @@ actor_rollout_ref:
     ranks: []
 
 data:
-  train_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_train.parquet
-  val_files: /home/zss/Social_Behavior_Simulation/data_prepocess/scripts/grpo_data/grpo_val.parquet
+  train_files: /home/zss/Social_Behavior_Simulation/data_preprocess/scripts/grpo_data/grpo_train.parquet
+  val_files: /home/zss/Social_Behavior_Simulation/data_preprocess/scripts/grpo_data/grpo_val.parquet
   train_batch_size: 8
   val_batch_size: 4     
   micro_batch_size_per_gpu: 1
