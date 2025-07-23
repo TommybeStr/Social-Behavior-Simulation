@@ -2,6 +2,7 @@ Miniconda3-latest-Linux-x86_64.sh
 data_preprocess/sft_data_raw/
 data_preprocess/sft_data_split/
 Qwen2.5-1.5B-Instruct/
-checkpoints/defaultQwen2.5-3B-Instruct/
-/home/zss/Social_Behavior_Simulation/checkpoints/default/
-/home/zss/Social_Behavior_Simulation/Qwen2.5-1.5B-Instruct/
+checkpoints/
+Qwen2.5-1.5B-Instruct/
+data_prepocess/scripts/grpo_data/
+outputs/
