@@ -1,39 +1,44 @@
 import json
-from sklearn.metrics import precision_score, recall_score, f1_score
 
-def compute_score(data_source, solution_str, ground_truth, extra_info=None):
-    try:
-        # 模型生成的预测用户（JSON array）
-        pred_users = [
-            entry.get("user_name", "").strip()
-            for entry in json.loads(solution_str)
-            if isinstance(entry, dict) and "user_name" in entry
-        ]
-    except:
-        pred_users = []
+def _maybe_float(x, *keys):
+    if isinstance(x, dict):
+        for k in keys:
+            if k in x:
+                try:
+                    return float(x[k])
+                except Exception:
+                    pass
+    return None
 
-    try:
-        true_users = [
-            entry.get("user_name", "").strip()
-            for entry in json.loads(ground_truth)
-            if isinstance(entry, dict) and "user_name" in entry
-        ]
-    except:
-        true_users = []
+def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+    """
+    优先返回你在 rollout 阶段已经算好的分数：
+      1) extra_info.reward_scores.rewards / trajectory_reward / step_reward
+      2) 兼容 kwargs.reward_scores 同名字段
+    若都没有，则安全返回 0.0（不会中断训练；真正的 token-level 奖励来自 batch['rm_scores']）。
+    """
+    # 解析 extra_info
+    if isinstance(extra_info, str):
+        try:
+            extra_info = json.loads(extra_info)
+        except Exception:
+            extra_info = {}
+    if not isinstance(extra_info, dict):
+        extra_info = {}
 
-    try:
-        prompt = extra_info.get("prompt", {})
-        if isinstance(prompt, str):
-            prompt = json.loads(prompt)
-        potential_users = [
-            u.get("user_name", "").strip()
-            for u in prompt.get("potential_interactors", [])
-        ]
-    except:
-        potential_users = []
+    # 1) 从 extra_info.reward_scores 读取
+    rs = extra_info.get("reward_scores", {})
+    v = _maybe_float(rs, "rewards", "trajectory_reward", "step_reward")
+    if v is not None:
+        return v
 
-    # 构造标签
-    y_true = [1 if user in true_users else 0 for user in potential_users]
-    y_pred = [1 if user in pred_users else 0 for user in potential_users]
+    # 2) 兼容 extra_info 顶层 或 kwargs.reward_scores
+    v = _maybe_float(extra_info, "rewards", "trajectory_reward", "step_reward")
+    if v is not None:
+        return v
+    v = _maybe_float(kwargs.get("reward_scores", {}), "rewards", "trajectory_reward", "step_reward")
+    if v is not None:
+        return v
 
-    return f1_score(y_true, y_pred, zero_division=0)
+    # 3) 兜底：返回 0.0（不影响你已注入的 batch['rm_scores']）
+    return 0.0

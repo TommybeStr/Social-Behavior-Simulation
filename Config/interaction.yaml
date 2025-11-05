@@ -1,0 +1,8 @@
+# Config/interaction.yaml
+interaction:
+  - name: my_chat
+    class_name: verl.interactions.base.BaseInteraction
+    config:
+      start_role: system
+      system_message: |
+        你是一个专业的对话 AI，请根据用户的问题给出准确回答。

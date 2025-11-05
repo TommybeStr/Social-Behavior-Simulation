@@ -62,7 +62,7 @@ nohup python -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.use_torch_compile=false \
   actor_rollout_ref.actor.use_dynamic_bsz=true \
   actor_rollout_ref.actor.loss_agg_mode=token-mean \
-  actor_rollout_ref.rollout.name=huggingface \
+  actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.mode=sync \
   actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
   actor_rollout_ref.rollout.temperature=1.0 \
@@ -76,7 +76,7 @@ nohup python -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.fsdp_config.fsdp_size=1 \
   actor_rollout_ref.ref.ulysses_sequence_parallel_size=1 \
   actor_rollout_ref.hybrid_engine=true \
-  trainer.logger='["console", "tensorboard"]' \
+  trainer.logger='["console"]' \
   trainer.project_name=social-behavior-grpo \
   trainer.experiment_name=run${nproc_per_node}gpu \
   trainer.nnodes=$NODES \
@@ -89,3 +89,4 @@ nohup python -m verl.trainer.main_ppo \
   trainer.device=cuda \
   critic.strategy=fsdp \
   > ${LOG_FILE} 2>&1 &
+  "$@"

@@ -1,0 +1,2 @@
+[verl.rollout_types]
+self_play = my_rollout:SelfPlayRollout

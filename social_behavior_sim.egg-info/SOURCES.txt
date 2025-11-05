@@ -1,0 +1,7 @@
+README.md
+setup.py
+social_behavior_sim.egg-info/PKG-INFO
+social_behavior_sim.egg-info/SOURCES.txt
+social_behavior_sim.egg-info/dependency_links.txt
+social_behavior_sim.egg-info/entry_points.txt
+social_behavior_sim.egg-info/top_level.txt

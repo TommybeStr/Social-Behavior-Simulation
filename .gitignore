@@ -1,9 +1,21 @@
-Miniconda3-latest-Linux-x86_64.sh
-data_preprocess/sft_data_raw/
-data_preprocess/sft_data_split/
-Qwen2.5-1.5B-Instruct/
-checkpoints/
-Qwen2.5-3B-Instruct/
-data_preprocess/scripts/grpo_data/
-outputs/
-/home/zss/Social_Behavior_Simulation/outlines_011/
+# 单个安装脚本
+/Miniconda3-latest-Linux-x86_64.sh
+/check.json
+
+# 数据与切分（全部忽略）
+/data_preprocess/sft_data_raw/
+/data_preprocess/sft_data_split/
+/data_preprocess/grpo_data/
+/data_preprocess/scripts/grpo_data/
+
+# 训练产物、模型权重与输出
+/Qwen2.5-1.5B-Instruct/
+/Qwen2.5-3B-Instruct/
+/checkpoints/
+/outputs/
+/rollouts/
+/outlines_011/
+
+# Python缓存
+__pycache__/
+*.log
