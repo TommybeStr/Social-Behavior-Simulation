@@ -14,6 +14,11 @@
   2) 样本构造时跳过候选池人数 > 阈值(默认1000)的根作者
   3) 分 depth 报告：平均每条样本从多少候选中选出多少 gold（gold=type!=0）
   4) 验证集示例：输出 10 条 depth=1(≈depth2) 且有 gold 的样本 ID
+
+当前版本的切分输出：
+- 按 record_id 划分为 train / val 两部分（约 85% / 15%）
+- 只输出 train.parquet 和 val.parquet
+- 原先 “val + test” 的样本都归入 val
 """
 
 import os
@@ -41,21 +46,33 @@ PSEP_BLOCK_END   = "\n</POTENTIAL_SPANS>\n"
 CSTART_TOKEN = "<|cstart|>"
 CEND_TOKEN   = "<|cend|>"
 
+# depth0 过采样倍数（训练集）：每条 depth0 样本重复多少次
+DEPTH0_OVERSAMPLE_FACTOR = 10
+
 # ---------- System Prompt ----------
 SYSTEM_PROMPT = f'''你是社交媒体互动预测专家。请严格依据 user 消息中的标注字段进行判断，并输出一个覆盖全部候选的 JSON 数组（顺序必须严格与候选顺序一致）。
-
 【【输入字段（单样本 JSON）】
 - username：作者
 - interests：作者兴趣（数组）
 - content：正文文本。
 - historicalinteractors：与作者历史上发生过互动的用户名列表。注意：其末尾会追加一个特殊段落 `<POTENTIAL_SPANS>`，用于提供候选人信息。
-
 【关于 <POTENTIAL_SPANS>】
 - `<POTENTIAL_SPANS>` 紧跟在historicalinteractors末尾，并以 `</POTENTIAL_SPANS>` 结束（严格成对）。
-- 其中每个候选用成对分隔符 `{PSEP_TOKEN}` 包裹：`{PSEP_TOKEN}{{候选JSON}}{PSEP_TOKEN}`。
+- 其中每个候选用成对分隔符 {PSEP_TOKEN} 包裹：`{PSEP_TOKEN}{{候选JSON}}{PSEP_TOKEN}`。
 - 候选 JSON 严格包含：{{"user_name": 候选人, "interests": 候选人兴趣, "depth": 层级}}。
 - 这些候选块的先后顺序即为评分类与输出顺序的唯一依据；禁止重排、丢失或增添。
-
+【判断原则（务必遵守）】
+1. 注意interests
+   - 当候选人与作者的 interests 存在明显交集，或候选 interests 与正文 content 中的主题高度相关时，更倾向预测其会发生互动（type=1 或 type=2）。
+2. 正确理解 depth 的作用：
+   - depth 表示候选在整棵互动/转发树中的层级
+   - depth 越小（越接近根节点），通常代表信息距离更近，更有可能产生直接互动。
+   - depth 较大时仍可能发生互动，但除非 interests 显著匹配或历史互动强信号支持，否则应更谨慎地预测互动。
+3. type 选择和 content 生成：
+   - 当候选人更可能围绕正文内容进行讨论、补充、提问或表达看法时，选择 type=1（评论）。
+   - 当候选人更可能以“转发 + 简短态度/评语”的形式传播时，选择 type=2（转发微博）。
+   - 生成 type=1 或 type=2 的 content 时，应结合作者 content 与双方 interests，生成简短、自然且与话题相关的文本；避免无意义模板句。
+   - 每个候选在当前样本中只能对应一个 type（0 或 1 或 2），不得重复预测或多种类型共存。
 【唯一输出（严格格式）】
 - 输出一个 JSON 数组，长度等于候选数量，顺序与 <POTENTIAL_SPANS> 中候选顺序一致。
 - 数组元素结构：
@@ -106,7 +123,8 @@ def save_parquet_rows(rows: List[Dict[str, Any]], path: str, *, batch_size: int 
              pa.array([], type=pa.large_string())],
             schema=TABLE_SCHEMA
         )
-        pq.write_table(empty, path, compression=compression); return
+        pq.write_table(empty, path, compression=compression)
+        return
     writer = None
     total_batches = (len(rows) + batch_size - 1) // batch_size
     with tqdm(total=total_batches, desc=desc) as pbar:
@@ -114,7 +132,8 @@ def save_parquet_rows(rows: List[Dict[str, Any]], path: str, *, batch_size: int 
             table = rows_to_arrow_table(rows[i:i+batch_size])
             if writer is None:
                 writer = pq.ParquetWriter(path, table.schema, compression=compression, use_dictionary=True)
-            writer.write_table(table); pbar.update(1)
+            writer.write_table(table)
+            pbar.update(1)
     if writer is not None:
         writer.close()
 
@@ -160,9 +179,11 @@ def collect_candidate_pool_for_root(records_of_root: List[Dict[str, Any]], user_
 def _strip_retweet_tail(text: Any) -> Any:
     if not isinstance(text, str):
         return text
-    idx1 = text.find("//@"); idx2 = text.find("/@")
+    idx1 = text.find("//@")
+    idx2 = text.find("/@")
     idxs = [i for i in (idx1, idx2) if i != -1]
-    if not idxs: return text.strip()
+    if not idxs:
+        return text.strip()
     return text[:min(idxs)].rstrip()
 
 def _sanitize_content_for_markers(text: str) -> str:
@@ -356,7 +377,8 @@ def report_depth_candidate_gold_stats(rows: List[Dict[str, Any]]):
 # ---------- 入口 ----------
 _ID_RE = re.compile(r"^(?P<rec>.+?)_root_(?P<root>.+?)_flchunk_(?P<idx>\d+)$")
 def parse_record_id(sample_id: str) -> str:
-    m = _ID_RE.match(str(sample_id)); return m.group("rec") if m else ""
+    m = _ID_RE.match(str(sample_id))
+    return m.group("rec") if m else ""
 
 def main(input_file: str,
          output_dir: str,
@@ -431,28 +453,52 @@ def main(input_file: str,
     # === 分 depth 报告每条样本平均候选/平均 gold ===
     report_depth_candidate_gold_stats(rows)
 
-    # record_id 级切分
+    # -------- 分割：train / val（无 test；val = 原来的 val+test 总和） --------  # >>> 改动开始
     df_idx = pd.DataFrame({"idx": list(range(len(rows)))})
     df_idx["record_id"] = [rows[i]["sft_chunk_info"]["record_id"] for i in range(len(rows))]
 
     unique_recs = list(dict.fromkeys(df_idx["record_id"].fillna("").astype(str).tolist()))
     rng.shuffle(unique_recs)
     n_rec = len(unique_recs)
+
+    # 约 85% 记录作为 train，剩余 15% 作为 val
     n_train_rec = int(round(n_rec * 0.85))
-    n_val_rec   = int(round(n_rec * 0.05))
-    n_test_rec  = max(0, n_rec - n_train_rec - n_val_rec)
+    n_train_rec = min(max(n_train_rec, 0), n_rec)  # 防止极端 rounding 问题
 
     recs_train = set(unique_recs[:n_train_rec])
-    recs_val   = set(unique_recs[n_train_rec:n_train_rec + n_val_rec])
-    recs_test  = set(unique_recs[n_train_rec + n_val_rec:])
+    recs_val   = set(unique_recs[n_train_rec:])
 
     idx_train = df_idx[df_idx["record_id"].isin(recs_train)]["idx"].tolist()
     idx_val   = df_idx[df_idx["record_id"].isin(recs_val)]["idx"].tolist()
-    idx_test  = df_idx[df_idx["record_id"].isin(recs_test)]["idx"].tolist()
 
     rows_train = [rows[i] for i in idx_train]
     rows_val   = [rows[i] for i in idx_val]
-    rows_test  = [rows[i] for i in idx_test]
+    # -------- 分割结束 --------  # >>> 改动结束
+
+    # === 对训练集进行 depth0 过采样 ===
+    if DEPTH0_OVERSAMPLE_FACTOR > 1:
+        rows_train_aug: List[Dict[str, Any]] = []
+        for r in rows_train:
+            d = int(r.get("node_depth", 0))
+            if d == 0:
+                # 每条 depth0 样本重复 DEPTH0_OVERSAMPLE_FACTOR 次
+                for rep in range(DEPTH0_OVERSAMPLE_FACTOR):
+                    r_copy = dict(r)
+                    # 为了避免调试时 id 完全一样，这里给复制的样本加一个简单后缀
+                    if rep == 0:
+                        r_copy["id"] = r["id"]
+                    else:
+                        r_copy["id"] = f"{r['id']}__d0x{rep}"
+                    rows_train_aug.append(r_copy)
+            else:
+                rows_train_aug.append(r)
+        # 随机打乱过采样后的训练集
+        rng.shuffle(rows_train_aug)
+        rows_train = rows_train_aug
+        print(f"[oversample] depth0 过采样：factor={DEPTH0_OVERSAMPLE_FACTOR}, "
+              f"过采样后训练样本数 = {len(rows_train)}")
+    else:
+        print("[oversample] DEPTH0_OVERSAMPLE_FACTOR <= 1，未进行过采样。")
 
     # === 验证集示例：输出 depth=1(≈depth2) 且有 gold 的样本 ID（最多 N 条） ===
     # 在本脚本中 node_depth=1 即“预测第二层”，对应你的“depth2”
@@ -472,27 +518,27 @@ def main(input_file: str,
     else:
         print("[val] 未找到 depth=1(≈depth2) 且有 gold 的验证集样本。")
 
-    print("[split] record_id 级：train/val/test 记录数 = {}/{}/{}".format(len(recs_train), len(recs_val), len(recs_test)))
-    print("[split] 样本条数：train/val/test = {}/{}/{}".format(len(rows_train), len(rows_val), len(rows_test)))
+    print("[split] record_id 级：train/val 记录数 = {}/{}".format(len(recs_train), len(recs_val)))
+    print("[split] 样本条数：train/val = {}/{}".format(len(rows_train), len(rows_val)))
 
     train_out = os.path.join(output_dir, "train.parquet")
     val_out   = os.path.join(output_dir, "val.parquet")
-    test_out  = os.path.join(output_dir, "test.parquet")
 
     save_parquet_rows(rows_train, train_out, batch_size=parquet_batch_size, desc="写 Parquet(train)", compression=parquet_compression)
     save_parquet_rows(rows_val,   val_out,   batch_size=parquet_batch_size, desc="写 Parquet(val)",   compression=parquet_compression)
-    save_parquet_rows(rows_test,  test_out,  batch_size=parquet_batch_size, desc="写 Parquet(test)",  compression=parquet_compression)
 
-    print("[done] 单轮/两层 SFT 构造完成（已输出 3 个 Parquet）")
-    print("train : {}\nval   : {}\ntest  : {}".format(train_out, val_out, test_out))
+    print("[done] 单轮/两层 SFT 构造完成（已输出 2 个 Parquet）")
+    print("train : {}\nval   : {}".format(train_out, val_out))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='单轮 SFT 构造（两层分类版；record_id 级切分 + 输出 3 个 Parquet）')
+    parser = argparse.ArgumentParser(
+        description='单轮 SFT 构造（两层分类版；record_id 级切分 + 输出 train/val 两个 Parquet，val≈15%）'
+    )
     parser.add_argument('--input', required=True, help='输入 JSON 文件路径（原始树形数据，顶层为 list）')
-    parser.add_argument('--output_dir', required=True, help='输出文件夹（将生成 train/val/test 三个 Parquet）')
+    parser.add_argument('--output_dir', required=True, help='输出文件夹（将生成 train.parquet / val.parquet）')
     parser.add_argument('--shuffle_seed', type=int, default=42)
     parser.add_argument('--parquet_batch_size', type=int, default=4000)
-    parser.add_argument('--k_potential_per_chunk', type=int, default=100, help='每条样本放入的候选个数 K')
+    parser.add_argument('--k_potential_per_chunk', type=int, default=50, help='每条样本放入的候选个数 K')
     parser.add_argument('--parquet_compression', type=str, default="zstd", help='Parquet 压缩算法（zstd/snappy/uncompressed 等）')
     parser.add_argument('--large_pool_threshold', type=int, default=1000, help='阈值：候选池人数 > 阈值 的根作者将被跳过')
     parser.add_argument('--val_depth2_head', type=int, default=30, help='在验证集中输出的 depth=1(≈depth2) 且有 gold 的样本ID数量上限')

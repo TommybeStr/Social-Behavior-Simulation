@@ -2,18 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-从训练日志解析并绘制两个分类头 loss 变化曲线。
+从训练日志解析并绘制 micro-batch 级别的 head loss / content loss / total loss 曲线。
 
-功能：
-1) 逐行解析日志，抽取 epoch、step、train/cls0_loss、train/cls1_loss、train/cls_loss
-2) 支持移动平均平滑（--smooth）
-3) 输出 PNG 曲线图与对齐好的明细 CSV
+支持的日志格式：
+1) [micro] 1/4 | cls0=0.2199 cls1=0.0000 content=0.0000 | depth0=1 depth1=0 pairs=16
+2) step:136 - train/loss:0.197889 - train/cls0_loss:0.219877 - ...（包含 train/loss）
 
-兼容的日志行示例：
-Epoch 1/3:   0%|          | 1/417 [00:20<2:21:02, 20.34s/it]step:2 - train/loss:0.009107 - train/lr(1e-3):0.005000 - train/cls_weight:0.800000 - train/gen_weight:0.200000 - train/cls_loss:0.048563 - train/cls0_loss:0.000000 - train/cls1_loss:0.048563 - ...
+关键逻辑更新：
+- Head0 绘图：只要 depth0 == 1，就绘制（无论 cls0_loss 是否为 0）
+- Head1 绘图：只要 depth1 == 1，就绘制
+- Total loss：直接使用日志中的 train/loss 字段
 
-使用示例：
-python plot_cls_losses.py -i train.log -o cls_losses.png --csv cls_losses.csv --smooth 5
+输出 4 张 PNG：
+  <prefix>_micro_head0.png
+  <prefix>_micro_head1.png
+  <prefix>_micro_content.png
+  <prefix>_micro_total.png
+
+用法示例：
+python plot_micro_losses.py -i train.log -o run1_micro --smooth 50
 """
 
 import re
@@ -23,38 +30,57 @@ from typing import List, Dict, Any
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ---- 正则准备（尽量鲁棒，兼容科学计数法）----
+# ---- 正则（兼容科学计数法）----
 FLOAT = r'[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?'
+
+# Epoch 行
 PAT_EPOCH = re.compile(r'Epoch\s+(\d+)\s*/\s*(\d+)')
-PAT_STEP  = re.compile(r'\bstep:(\d+)\b')
-# 捕获形如 "train/cls0_loss:0.123456"
-PAT_METRIC = re.compile(r'\b(train|eval)/(cls0_loss|cls1_loss|cls_loss):(' + FLOAT + r')\b')
+
+# Train loss 行（包含 step 和 train/loss）
+PAT_TRAIN_LOSS = re.compile(
+    r'step:(\d+)\s*-\s*'
+    r'train/loss:(' + FLOAT + r')\s*-\s*'
+    r'train/cls_weight:(' + FLOAT + r')\s*-\s*'
+    r'train/gen_weight:(' + FLOAT + r')\s*-\s*'
+    r'train/cls_loss:(' + FLOAT + r')\s*-\s*'
+    r'train/cls0_loss:(' + FLOAT + r')\s*-\s*'
+    r'train/cls1_loss:(' + FLOAT + r')\s*-\s*'
+    r'train/content_loss:(' + FLOAT + r')'
+)
+
+# Micro 行：
+# [micro] 1/4 | cls0=0.2199 cls1=0.0000 content=0.0000 | depth0=1 depth1=0 pairs=16
+PAT_MICRO = re.compile(
+    r'\[micro\]\s+(\d+)/(\d+)\s*\|\s*'
+    r'cls0=(' + FLOAT + r')\s+'
+    r'cls1=(' + FLOAT + r')\s+'
+    r'content=(' + FLOAT + r')\s*\|\s*'
+    r'depth0=(\d+)\s+depth1=(\d+)\s+pairs=(\d+)'
+)
+
 
 def read_text_lines(path: str) -> List[str]:
-    # 兼容 Windows 控制台日志编码
+    """尽量容错地读取文本行。"""
     for enc in ("utf-8", "utf-8-sig", "gbk", "latin-1"):
         try:
             with open(path, 'r', encoding=enc, errors='ignore') as f:
                 return f.readlines()
         except Exception:
             continue
-    # 最后兜底
     with open(path, 'r', errors='ignore') as f:
         return f.readlines()
 
-def parse_log(path: str, pick_split: str = "train") -> pd.DataFrame:
-    """
-    解析单个日志文件，返回包含：
-    ['file','seq','epoch','epoch_total','step_in_epoch','cls0_loss','cls1_loss','cls_loss']
-    的 DataFrame；seq 为按出现顺序的全局序号（从 1 开始）。
-    仅保留同时出现任意一个目标 metric 的样本行（优先 train/*）。
-    """
+
+def parse_micro_log(path: str) -> pd.DataFrame:
     lines = read_text_lines(path)
-    seq = 0
+
     cur_epoch = None
     cur_epoch_total = None
+    cur_step_in_epoch = None
+    train_loss_by_step = {}  # step_num -> total_loss
 
     rows: List[Dict[str, Any]] = []
+    micro_global_seq = 0
 
     for ln in lines:
         # 更新 epoch
@@ -63,122 +89,295 @@ def parse_log(path: str, pick_split: str = "train") -> pd.DataFrame:
             cur_epoch = int(m_epoch.group(1))
             cur_epoch_total = int(m_epoch.group(2))
 
-        # 解析 step
-        m_step = PAT_STEP.search(ln)
-        step_in_epoch = int(m_step.group(1)) if m_step else None
+        # 解析 train/loss 行（包含 step）
+        m_train = PAT_TRAIN_LOSS.search(ln)
+        if m_train:
+            step_num = int(m_train.group(1))
+            total_loss_val = float(m_train.group(2))
+            train_loss_by_step[step_num] = total_loss_val
+            cur_step_in_epoch = step_num
 
-        # 抓取这一行内所有 metric
-        metrics = PAT_METRIC.findall(ln)  # list of tuples: [(split, name, value_str), ...]
-        if not metrics:
+        # 解析 micro 行
+        m = PAT_MICRO.search(ln)
+        if not m:
             continue
 
-        # 优先取 train/*（如果 pick_split=="train"），否则 eval/*
-        # 但也允许同一行同时有多个，分别挑出需要的
-        bucket: Dict[str, float] = {}
-        for split, name, val in metrics:
-            if split != pick_split:
-                continue
-            try:
-                bucket[name] = float(val)
-            except ValueError:
-                continue
+        micro_global_seq += 1
+        micro_idx      = int(m.group(1))
+        micro_total    = int(m.group(2))
+        cls0_val       = float(m.group(3))
+        cls1_val       = float(m.group(4))
+        content_val    = float(m.group(5))
+        depth0_cnt     = int(m.group(6))
+        depth1_cnt     = int(m.group(7))
+        pairs_cnt      = int(m.group(8))
 
-        # 如果优先 split 没抓到，再尝试另一 split 兜底（可选）
-        if not bucket:
-            for split, name, val in metrics:
-                # 兜底抓任何 split（通常是 eval）
-                try:
-                    bucket.setdefault(name, float(val))
-                except ValueError:
-                    pass
+        total_loss_val = train_loss_by_step.get(cur_step_in_epoch, None)
 
-        # 只在至少抓到一个目标 loss 时记录
-        keys_of_interest = {"cls0_loss", "cls1_loss", "cls_loss"}
-        if keys_of_interest.intersection(bucket.keys()):
-            seq += 1
-            rows.append({
-                "file": os.path.basename(path),
-                "seq": seq,
-                "epoch": cur_epoch,
-                "epoch_total": cur_epoch_total,
-                "step_in_epoch": step_in_epoch,
-                "cls0_loss": bucket.get("cls0_loss"),
-                "cls1_loss": bucket.get("cls1_loss"),
-                "cls_loss": bucket.get("cls_loss"),
-            })
+        row = {
+            "file": os.path.basename(path),
+            "micro_global_seq": micro_global_seq,
+            "micro_idx_in_step": micro_idx,
+            "micro_total_in_step": micro_total,
+            "epoch": cur_epoch,
+            "epoch_total": cur_epoch_total,
+            "step_in_epoch": cur_step_in_epoch,
+            "cls0_loss": cls0_val,
+            "cls1_loss": cls1_val,
+            "content_loss": content_val,
+            "total_loss": total_loss_val,
+            "depth0": depth0_cnt,
+            "depth1": depth1_cnt,
+            "pairs": pairs_cnt,
+        }
+        rows.append(row)
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
-def concat_with_source(files: List[str], pick_split: str = "train") -> pd.DataFrame:
+
+def concat_with_source(files: List[str]) -> pd.DataFrame:
     dfs = []
     for fp in files:
-        df = parse_log(fp, pick_split=pick_split)
+        df = parse_micro_log(fp)
         if df.empty:
-            print(f"[warn] {fp} 未解析到目标指标。")
+            print(f"[warn] {fp} 未解析到任何 [micro] 行。")
         dfs.append(df)
     if not dfs:
         return pd.DataFrame()
     out = pd.concat(dfs, ignore_index=True)
-    # 增加一个“全局步”列：按文件内 seq 连续，跨文件不连续；为了可视化清晰，这里再做一个跨文件连续序号
-    out["global_seq"] = range(1, len(out) + 1)
+    out["row_seq"] = range(1, len(out) + 1)
     return out
+
 
 def apply_smoothing(s: pd.Series, window: int) -> pd.Series:
     if window <= 1:
         return s
-    return s.rolling(window=window, min_periods=1, center=False).mean()
+    return s.rolling(window=window, min_periods=1).mean()
 
-def main():
-    ap = argparse.ArgumentParser(description="从训练日志绘制两个分类头 loss 曲线")
-    ap.add_argument("-i", "--inputs", nargs="+", required=True, help="一个或多个日志文件路径")
-    ap.add_argument("-o", "--out", default="cls_losses.png", help="输出曲线图 PNG 路径")
-    ap.add_argument("--csv", default="cls_losses.csv", help="导出的 CSV 路径")
-    ap.add_argument("--smooth", type=int, default=1, help="平滑窗口大小(移动平均)，默认为1=不平滑")
-    ap.add_argument("--split", choices=["train", "eval"], default="train", help="优先解析的 split（默认 train）")
-    ap.add_argument("--figsize", type=float, nargs=2, default=(10, 5), help="图尺寸，默认 10 5")
-    args = ap.parse_args()
 
-    df = concat_with_source(args.inputs, pick_split=args.split)
-    if df.empty:
-        print("[error] 没有可用数据，检查日志路径与内容。")
+def plot_head_micro(df: pd.DataFrame, head_id: int, out_png: str,
+                    smooth: int, xcol: str, title_extra: str):
+    """
+    对 head0/head1：根据 depth0/depth1 判断是否属于该 head。
+    - head0: depth0 == 1
+    - head1: depth1 == 1
+    即使 loss=0 也绘制。
+    """
+    plt.figure(figsize=(10, 5), dpi=150)
+    key_loss = f"cls{head_id}_loss"
+    depth_col = "depth0" if head_id == 0 else "depth1"
+
+    missing_cols = []
+    if key_loss not in df.columns:
+        missing_cols.append(key_loss)
+    if depth_col not in df.columns:
+        missing_cols.append(depth_col)
+    if missing_cols:
+        print(f"[warn] 缺少列 {missing_cols}，跳过绘制 {out_png}")
+        plt.close()
         return
 
-    # 对每个文件分别做平滑，避免跨文件相互影响
-    df = df.sort_values(["file", "seq"]).reset_index(drop=True)
-    df["cls0_loss_s"] = df.groupby("file")["cls0_loss"].transform(lambda x: apply_smoothing(x, args.smooth))
-    df["cls1_loss_s"] = df.groupby("file")["cls1_loss"].transform(lambda x: apply_smoothing(x, args.smooth))
-    df["cls_loss_s"]  = df.groupby("file")["cls_loss" ].transform(lambda x: apply_smoothing(x, args.smooth))
+    df_hit = df[df[depth_col] == 1].copy()
+    if df_hit.empty:
+        plt.title(f"Head-{head_id} micro loss (no micro with {depth_col}=1)")
+        plt.xlabel("Micro index")
+        plt.ylabel(key_loss)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(out_png)
+        plt.close()
+        print(f"[ok] Head-{head_id} 图已保存 -> {out_png} (0 点)")
+        return
 
-    # 保存 CSV
-    df.to_csv(args.csv, index=False, encoding="utf-8-sig")
-    print(f"[ok] 已导出 CSV -> {args.csv}")
+    if xcol not in df_hit.columns:
+        xcol = "row_seq"
 
-    # 绘图（按文件区分颜色/线型）
-    plt.figure(figsize=tuple(args.figsize), dpi=150)
-    # 为了图例清晰：每个文件画两条（cls0 & cls1）；cls_loss 画成细线参考
-    for fname, sub in df.groupby("file", sort=False):
-        x = sub["global_seq"]
-        # 只在有值时绘制
-        if sub["cls0_loss_s"].notna().any():
-            plt.plot(x, sub["cls0_loss_s"], label=f"{fname} • cls0_loss")
-        if sub["cls1_loss_s"].notna().any():
-            plt.plot(x, sub["cls1_loss_s"], label=f"{fname} • cls1_loss")
-        # 参考总分类 loss（如果存在）
-        if sub["cls_loss_s"].notna().any():
-            plt.plot(x, sub["cls_loss_s"], linestyle="--", linewidth=1, label=f"{fname} • cls_loss(ref)")
+    df_hit = df_hit.sort_values(xcol)
+    df_hit["plot_x"] = range(1, len(df_hit) + 1)
+    df_hit[key_loss] = apply_smoothing(df_hit[key_loss], smooth)
 
-    title = f"Classification Head Losses ({args.split})"
-    if args.smooth and args.smooth > 1:
-        title += f"  |  moving avg={args.smooth}"
-    plt.title(title)
-    plt.xlabel("Global sequence (by appearance)")
-    plt.ylabel("Loss")
-    plt.legend(loc="best")
+    total_points = len(df_hit)
+
+    for fname, sub in df_hit.groupby("file", sort=False):
+        plt.plot(sub["plot_x"], sub[key_loss], label=f"{fname} (n={len(sub)})")
+
+    ttl = f"Head-{head_id} micro loss (filtered by {depth_col}=1)"
+    if title_extra:
+        ttl += f" | {title_extra}"
+    if smooth > 1:
+        ttl += f" | MA={smooth}"
+    plt.title(ttl)
+    plt.xlabel("Micro index (1..N)")
+    plt.ylabel(key_loss)
     plt.grid(True, alpha=0.3)
+    plt.legend(loc="best")
     plt.tight_layout()
-    plt.savefig(args.out)
-    print(f"[ok] 已保存曲线图 -> {args.out}")
+    plt.savefig(out_png)
+    plt.close()
+    print(f"[ok] Head-{head_id} 图已保存 -> {out_png} (共 {total_points} 点)")
+
+
+def plot_content_micro(df: pd.DataFrame, out_png: str,
+                       smooth: int, xcol: str, title_extra: str):
+    plt.figure(figsize=(10, 5), dpi=150)
+    key_loss = "content_loss"
+
+    if key_loss not in df.columns:
+        print(f"[warn] 缺少列 {key_loss}，跳过绘制 {out_png}")
+        plt.close()
+        return
+
+    df_valid = df[df[key_loss].notna()].copy()
+    if df_valid.empty:
+        plt.title("Content micro loss (no data)")
+        plt.xlabel("Micro index")
+        plt.ylabel(key_loss)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(out_png)
+        plt.close()
+        print(f"[ok] Content 图已保存 -> {out_png} (0 点)")
+        return
+
+    if xcol not in df_valid.columns:
+        xcol = "row_seq"
+
+    df_valid = df_valid.sort_values(xcol)
+    df_valid["plot_x"] = range(1, len(df_valid) + 1)
+    df_valid[key_loss] = apply_smoothing(df_valid[key_loss], smooth)
+
+    total_points = len(df_valid)
+
+    for fname, sub in df_valid.groupby("file", sort=False):
+        plt.plot(sub["plot_x"], sub[key_loss], label=f"{fname} (n={len(sub)})")
+
+    ttl = "Content micro loss"
+    if title_extra:
+        ttl += f" | {title_extra}"
+    if smooth > 1:
+        ttl += f" | MA={smooth}"
+    plt.title(ttl)
+    plt.xlabel("Micro index (1..N)")
+    plt.ylabel(key_loss)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    print(f"[ok] Content 图已保存 -> {out_png} (共 {total_points} 点)")
+
+
+def plot_total_micro(df: pd.DataFrame, out_png: str,
+                     smooth: int, xcol: str, title_extra: str):
+    """
+    绘制日志中记录的 train/loss（总 loss）。
+    """
+    plt.figure(figsize=(10, 5), dpi=150)
+    key_loss = "total_loss"
+
+    if key_loss not in df.columns:
+        print(f"[warn] 缺少列 {key_loss}，跳过绘制 {out_png}")
+        plt.close()
+        return
+
+    df_valid = df[df[key_loss].notna()].copy()
+    if df_valid.empty:
+        plt.title("Total micro loss (no train/loss data)")
+        plt.xlabel("Micro index")
+        plt.ylabel(key_loss)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(out_png)
+        plt.close()
+        print(f"[ok] Total 图已保存 -> {out_png} (0 点)")
+        return
+
+    if xcol not in df_valid.columns:
+        xcol = "row_seq"
+
+    df_valid = df_valid.sort_values(xcol)
+    df_valid["plot_x"] = range(1, len(df_valid) + 1)
+    df_valid[key_loss] = apply_smoothing(df_valid[key_loss], smooth)
+
+    total_points = len(df_valid)
+
+    for fname, sub in df_valid.groupby("file", sort=False):
+        plt.plot(sub["plot_x"], sub[key_loss], label=f"{fname} (n={len(sub)})")
+
+    ttl = "Total micro loss (from train/loss)"
+    if title_extra:
+        ttl += f" | {title_extra}"
+    if smooth > 1:
+        ttl += f" | MA={smooth}"
+    plt.title(ttl)
+    plt.xlabel("Micro index (1..N)")
+    plt.ylabel(key_loss)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    print(f"[ok] Total 图已保存 -> {out_png} (共 {total_points} 点)")
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="从训练日志解析 micro-batch 级别 loss 并绘图（支持 depth-based head selection）"
+    )
+    ap.add_argument("-i", "--inputs", nargs="+", required=True, help="一个或多个日志文件路径")
+    ap.add_argument("-o", "--out_prefix", default="micro_losses", help="输出文件前缀")
+    ap.add_argument("--csv", default=None, help="可选：导出 CSV 路径")
+    ap.add_argument("--smooth", type=int, default=1, help="平滑窗口大小，默认1（不平滑）")
+    ap.add_argument(
+        "--x",
+        choices=["row_seq", "micro_global_seq", "micro_idx_in_step"],
+        default="row_seq",
+        help="内部排序使用的横轴字段（最终都会映射为 1..N）"
+    )
+
+    args = ap.parse_args()
+
+    df = concat_with_source(args.inputs)
+    if df.empty:
+        print("[error] 没有解析到任何 [micro] 数据，检查日志路径与内容。")
+        return
+
+    if args.csv:
+        df.to_csv(args.csv, index=False, encoding="utf-8-sig")
+        print(f"[ok] 已导出 micro 级 CSV -> {args.csv}")
+
+    title_extra = "micro-level"
+
+    # 绘制四张图
+    plot_head_micro(
+        df, head_id=0,
+        out_png=f"{args.out_prefix}_micro_head0.png",
+        smooth=args.smooth,
+        xcol=args.x,
+        title_extra=title_extra,
+    )
+    plot_head_micro(
+        df, head_id=1,
+        out_png=f"{args.out_prefix}_micro_head1.png",
+        smooth=args.smooth,
+        xcol=args.x,
+        title_extra=title_extra,
+    )
+    plot_content_micro(
+        df,
+        out_png=f"{args.out_prefix}_micro_content.png",
+        smooth=args.smooth,
+        xcol=args.x,
+        title_extra=title_extra,
+    )
+    plot_total_micro(
+        df,
+        out_png=f"{args.out_prefix}_micro_total.png",
+        smooth=args.smooth,
+        xcol=args.x,
+        title_extra=title_extra,
+    )
+
 
 if __name__ == "__main__":
     main()

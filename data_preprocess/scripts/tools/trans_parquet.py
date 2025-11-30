@@ -13,7 +13,7 @@ import pandas as pd
 import json
 
 # =================== 用户可修改的部分 ===================
-INPUT_FILE   = "/home/zss/Social_Behavior_Simulation/data_preprocess/sft_data_split/renew_10.29/train.parquet"  # 输入 Parquet 路径
+INPUT_FILE   = "/home/zss/Social_Behavior_Simulation/data_preprocess/sft_data_split/renew_10.28/train.parquet"  # 输入 Parquet 路径
 OUTPUT_FILE  = "/home/zss/Social_Behavior_Simulation/check.json"  # 输出 JSON 路径
 ORIENT       = "records"   # JSON 结构: records, split, index, columns, values, table
 MAX_ROWS     = 10_000      # 仅导出前多少条
